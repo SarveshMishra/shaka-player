@@ -25,8 +25,9 @@
             border-bottom: 1px solid #2a2a2a;
             flex-shrink: 0;
         }
+        #url-wrap { position: relative; flex: 1; }
         #url-input {
-            flex: 1;
+            width: 100%;
             padding: 7px 12px;
             background: #2a2a2a;
             border: 1px solid #3a3a3a;
@@ -37,7 +38,72 @@
             transition: border-color 0.15s;
         }
         #url-input:focus { border-color: #666; }
+        #url-input.hist-open { border-radius: 6px 6px 0 0; border-bottom-color: #222; }
         #url-input::placeholder { color: #666; }
+
+        /* ── URL history dropdown ─────────────────────────────── */
+        #hist-drop {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0; right: 0;
+            background: #222;
+            border: 1px solid #3a3a3a;
+            border-top: none;
+            border-radius: 0 0 8px 8px;
+            max-height: 260px;
+            overflow-y: auto;
+            z-index: 200;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+        }
+        #hist-drop.open { display: block; }
+        .hi {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid #2a2a2a;
+            transition: background 0.1s;
+        }
+        .hi:hover { background: #2d2d2d; }
+        .hi-icon { color: #555; font-size: 13px; flex-shrink: 0; }
+        .hi-url {
+            flex: 1;
+            font-size: 12px;
+            color: #bbb;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .hi-url em { color: #fff; font-style: normal; font-weight: 600; }
+        .hi-del {
+            flex-shrink: 0;
+            color: #444;
+            font-size: 16px;
+            line-height: 1;
+            padding: 2px 5px;
+            border-radius: 4px;
+            transition: color 0.1s, background 0.1s;
+        }
+        .hi-del:hover { color: #ff6b6b; background: rgba(255,80,80,0.12); }
+        #hist-clear {
+            padding: 7px 12px;
+            font-size: 11px;
+            color: #555;
+            text-align: center;
+            cursor: pointer;
+            border-top: 1px solid #2a2a2a;
+            transition: color 0.1s;
+            letter-spacing: 0.3px;
+        }
+        #hist-clear:hover { color: #ff6b6b; }
+        #hist-empty {
+            padding: 12px;
+            font-size: 12px;
+            color: #555;
+            text-align: center;
+        }
         .url-btn {
             padding: 7px 14px;
             border: none;
@@ -338,7 +404,10 @@
 
 <!-- URL input -->
 <div id="url-bar">
-    <input id="url-input" type="text" placeholder="DASH (.mpd) or HLS (.m3u8) URL — press Enter to load" spellcheck="false" />
+    <div id="url-wrap">
+        <input id="url-input" type="text" placeholder="DASH (.mpd) or HLS (.m3u8) URL — press Enter to load" spellcheck="false" autocomplete="off" />
+        <div id="hist-drop"></div>
+    </div>
     <button class="url-btn" id="load-btn">Load</button>
     <button class="url-btn" id="demo-btn">Demo</button>
 </div>
@@ -557,12 +626,125 @@
         }
     }
 
-    loadBtn.addEventListener('click', () => loadStream(urlInput.value.trim()));
+    // ── URL History ──────────────────────────────────────────
+    const HIST_KEY = 'shaka_url_history';
+    const HIST_MAX = 30;
+    const histDrop = document.getElementById('hist-drop');
+
+    function histGet() {
+        try { return JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); }
+        catch { return []; }
+    }
+    function histSave(url) {
+        const list = histGet().filter(e => e.url !== url);
+        list.unshift({ url, t: Date.now() });
+        if (list.length > HIST_MAX) list.length = HIST_MAX;
+        localStorage.setItem(HIST_KEY, JSON.stringify(list));
+    }
+    function histDelete(url) {
+        localStorage.setItem(HIST_KEY, JSON.stringify(histGet().filter(e => e.url !== url)));
+    }
+    function histClear() { localStorage.removeItem(HIST_KEY); }
+
+    function highlight(text, q) {
+        if (!q) return text;
+        const i = text.toLowerCase().indexOf(q.toLowerCase());
+        if (i === -1) return text;
+        return text.slice(0, i) + '<em>' + text.slice(i, i + q.length) + '</em>' + text.slice(i + q.length);
+    }
+
+    function histRender(filter) {
+        const q = (filter || '').trim();
+        const all = histGet();
+        const matches = q ? all.filter(e => e.url.toLowerCase().includes(q.toLowerCase())) : all;
+
+        histDrop.innerHTML = '';
+
+        if (!matches.length) {
+            if (q) {
+                histDrop.innerHTML = `<div id="hist-empty">No history matches "${q}"</div>`;
+            } else {
+                histDrop.classList.remove('open');
+                urlInput.classList.remove('hist-open');
+                return;
+            }
+        } else {
+            matches.forEach(entry => {
+                const row = document.createElement('div');
+                row.className = 'hi';
+                row.innerHTML =
+                    `<span class="hi-icon">▶</span>` +
+                    `<span class="hi-url" title="${entry.url}">${highlight(entry.url, q)}</span>` +
+                    `<span class="hi-del" data-url="${entry.url}" title="Remove">×</span>`;
+
+                row.setAttribute('tabindex', '0');
+                row.querySelector('.hi-url').addEventListener('click', () => {
+                    urlInput.value = entry.url;
+                    histClose();
+                    loadStream(entry.url);
+                });
+                row.querySelector('.hi-del').addEventListener('click', ev => {
+                    ev.stopPropagation();
+                    histDelete(entry.url);
+                    histRender(urlInput.value);
+                });
+                histDrop.appendChild(row);
+            });
+
+            const clearRow = document.createElement('div');
+            clearRow.id = 'hist-clear';
+            clearRow.textContent = `Clear all history (${all.length})`;
+            clearRow.addEventListener('click', () => { histClear(); histClose(); });
+            histDrop.appendChild(clearRow);
+        }
+
+        histDrop.classList.add('open');
+        urlInput.classList.add('hist-open');
+    }
+
+    function histClose() {
+        histDrop.classList.remove('open');
+        urlInput.classList.remove('hist-open');
+    }
+
+    urlInput.addEventListener('focus', () => histRender(urlInput.value));
+    urlInput.addEventListener('input', () => histRender(urlInput.value));
+
+    // close when clicking outside the url bar
+    document.addEventListener('mousedown', e => {
+        if (!e.target.closest('#url-wrap') && !e.target.closest('#load-btn')) histClose();
+    });
+
+    // keyboard nav in dropdown
     urlInput.addEventListener('keydown', e => {
-        if (e.key === 'Enter') loadStream(urlInput.value.trim());
+        if (e.key === 'ArrowDown') {
+            const first = histDrop.querySelector('.hi');
+            if (first) { e.preventDefault(); first.focus(); }
+        }
+        if (e.key === 'Escape') histClose();
+    });
+    histDrop.addEventListener('keydown', e => {
+        const rows = [...histDrop.querySelectorAll('.hi')];
+        const idx = rows.indexOf(document.activeElement);
+        if (e.key === 'ArrowDown' && idx < rows.length - 1) { e.preventDefault(); rows[idx + 1].focus(); }
+        if (e.key === 'ArrowUp')  { e.preventDefault(); idx > 0 ? rows[idx - 1].focus() : urlInput.focus(); }
+        if (e.key === 'Enter' && idx >= 0) rows[idx].querySelector('.hi-url').click();
+        if (e.key === 'Escape') { histClose(); urlInput.focus(); }
+    });
+    loadBtn.addEventListener('click', () => {
+        const url = urlInput.value.trim();
+        if (url) { histSave(url); histClose(); loadStream(url); }
+    });
+    urlInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+            const url = urlInput.value.trim();
+            if (url) { histSave(url); histClose(); loadStream(url); }
+        }
     });
     demoBtn.addEventListener('click', () => {
         urlInput.value = DEMO_URL;
+        histSave(DEMO_URL);
+        histClose();
         loadStream(DEMO_URL);
     });
 
