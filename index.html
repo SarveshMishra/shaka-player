@@ -666,7 +666,9 @@
             player.configure({ abr: { enabled: true } });
         } else {
             player.configure({ abr: { enabled: false } });
-            const track = player.getVariantTracks().find(t => t.height === v);
+            // pick highest-bitrate track at this height
+            const tracks = player.getVariantTracks().filter(t => t.height === v);
+            const track = tracks.sort((a, b) => b.bandwidth - a.bandwidth)[0];
             if (track) player.selectVariantTrack(track, true);
         }
     });
