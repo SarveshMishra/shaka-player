@@ -112,10 +112,32 @@
             font-size: 13px;
             font-weight: 600;
             transition: filter 0.15s;
+            white-space: nowrap;
         }
         .url-btn:hover { filter: brightness(1.15); }
         #load-btn  { background: #e50914; color: #fff; }
         #demo-btn  { background: #2a2a2a; color: #ccc; border: 1px solid #3a3a3a; }
+
+        /* ── Engine toggle button ─────────────────────────────── */
+        #engine-btn {
+            background: #2a2a2a;
+            color: #888;
+            border: 1px solid #3a3a3a;
+            min-width: 74px;
+            font-size: 12px;
+            font-weight: 500;
+            letter-spacing: 0.2px;
+        }
+        #engine-btn.mode-shaka {
+            color: #e50914;
+            border-color: rgba(229,9,20,0.45);
+            background: rgba(229,9,20,0.08);
+        }
+        #engine-btn.mode-hls {
+            color: #a855f7;
+            border-color: rgba(168,85,247,0.45);
+            background: rgba(168,85,247,0.08);
+        }
 
         /* ── Player container ─────────────────────────────────── */
         #player-wrap {
@@ -379,6 +401,16 @@
             text-overflow: ellipsis;
             flex-shrink: 0;
         }
+        #status-bar .engine-tag {
+            font-weight: 700;
+            margin-right: 6px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 10px;
+            vertical-align: middle;
+        }
+        #status-bar .engine-tag.shaka { color: #e50914; background: rgba(229,9,20,0.12); }
+        #status-bar .engine-tag.hls   { color: #a855f7; background: rgba(168,85,247,0.12); }
 
         /* ── Help hint ────────────────────────────────────────── */
         #help-hint {
@@ -408,6 +440,7 @@
         <input id="url-input" type="text" placeholder="DASH (.mpd) or HLS (.m3u8) URL — press Enter to load" spellcheck="false" autocomplete="off" />
         <div id="hist-drop"></div>
     </div>
+    <button class="url-btn" id="engine-btn" title="Cycle player engine: Auto → Shaka → HLS.js">Auto</button>
     <button class="url-btn" id="load-btn">Load</button>
     <button class="url-btn" id="demo-btn">Demo</button>
 </div>
@@ -482,6 +515,7 @@
 
 <div id="status-bar">Ready — enter a stream URL above or click Demo</div>
 
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.7/shaka-player.compiled.js"></script>
 <script>
 (async function () {
@@ -492,6 +526,7 @@
     const urlInput    = document.getElementById('url-input');
     const loadBtn     = document.getElementById('load-btn');
     const demoBtn     = document.getElementById('demo-btn');
+    const engineBtn   = document.getElementById('engine-btn');
     const spinner     = document.getElementById('spinner');
     const errorBox    = document.getElementById('error-box');
     const osdEl       = document.getElementById('osd');
@@ -525,6 +560,29 @@
         streaming: { bufferingGoal: 300, bufferBehind: 60 }
     });
 
+    // ── Engine state ─────────────────────────────────────────
+    // activeEngine: 'shaka' | 'hls' | 'hls-native' | null
+    let activeEngine = null;
+    let hlsInstance  = null;
+    let engineMode   = 'auto'; // 'auto' | 'shaka' | 'hls'
+
+    const ENGINE_CYCLE  = ['auto', 'shaka', 'hls'];
+    const ENGINE_LABELS = { auto: 'Auto', shaka: 'Shaka', hls: 'HLS.js' };
+
+    function updateEngineBtn() {
+        engineBtn.textContent = ENGINE_LABELS[engineMode];
+        engineBtn.className = 'url-btn' + (engineMode === 'auto' ? '' : ` mode-${engineMode}`);
+    }
+    engineBtn.addEventListener('click', () => {
+        const idx = ENGINE_CYCLE.indexOf(engineMode);
+        engineMode = ENGINE_CYCLE[(idx + 1) % ENGINE_CYCLE.length];
+        updateEngineBtn();
+    });
+
+    // ── URL type detection ────────────────────────────────────
+    function isHlsUrl(url) { return /\.m3u8(\?|$)/i.test(url); }
+    function isDashUrl(url) { return /\.mpd(\?|$)/i.test(url); }
+
     // ── Helpers ──────────────────────────────────────────────
     function fmt(s) {
         if (!isFinite(s) || isNaN(s)) return '0:00';
@@ -544,11 +602,18 @@
         osdTimer = setTimeout(() => osdEl.classList.remove('visible'), 1100);
     }
 
-    function setStatus(msg) { statusBar.textContent = msg; }
+    function setStatus(msg, engine) {
+        if (engine) {
+            const cls  = engine === 'shaka' ? 'shaka' : 'hls';
+            const label = engine === 'shaka' ? 'Shaka' : 'HLS.js';
+            statusBar.innerHTML = `<span class="engine-tag ${cls}">${label}</span>${msg}`;
+        } else {
+            statusBar.textContent = msg;
+        }
+    }
 
     // ── Error helpers ─────────────────────────────────────────
     function diagnose(err, url) {
-        // Shaka structured errors
         if (err && err.code !== undefined) {
             const { code, category, data } = err;
             const httpStatus = Array.isArray(data) ? data[2] : undefined;
@@ -593,29 +658,138 @@
         errorBox.style.display = 'block';
     }
 
-    // ── Load stream ──────────────────────────────────────────
+    // ── Engine teardown helpers ───────────────────────────────
+    function destroyHls() {
+        if (hlsInstance) {
+            hlsInstance.destroy();
+            hlsInstance = null;
+        } else if (activeEngine === 'hls-native') {
+            video.removeAttribute('src');
+            video.load();
+        }
+    }
+
+    async function unloadShaka() {
+        try { await player.unload(); } catch (_) {}
+    }
+
+    // ── Load with Shaka ───────────────────────────────────────
+    async function loadWithShaka(url) {
+        destroyHls();
+        await unloadShaka();
+        await player.load(url);
+
+        activeEngine = 'shaka';
+
+        const heights = [...new Set(
+            player.getVariantTracks().map(t => t.height).filter(Boolean)
+        )].sort((a, b) => b - a);
+
+        qualitySel.innerHTML = '<option value="-1">Auto</option>';
+        heights.forEach(h => {
+            const o = document.createElement('option');
+            o.value = h; o.textContent = h + 'p';
+            qualitySel.appendChild(o);
+        });
+    }
+
+    // ── Load with HLS.js ──────────────────────────────────────
+    function loadWithHls(url) {
+        return new Promise(async (resolve, reject) => {
+            destroyHls();
+            await unloadShaka();
+
+            // Safari native HLS fallback when hls.js MSE is not supported
+            if (!window.Hls || !Hls.isSupported()) {
+                if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                    video.src = url;
+                    const onMeta  = () => { cleanup(); activeEngine = 'hls-native'; qualitySel.innerHTML = '<option value="-1">Auto</option>'; resolve(); };
+                    const onError = () => { cleanup(); reject(new Error('Native HLS playback failed')); };
+                    const cleanup = () => { video.removeEventListener('loadedmetadata', onMeta); video.removeEventListener('error', onError); };
+                    video.addEventListener('loadedmetadata', onMeta, { once: true });
+                    video.addEventListener('error', onError, { once: true });
+                    return;
+                }
+                return reject(new Error('HLS.js is not supported in this browser and native HLS is unavailable.'));
+            }
+
+            hlsInstance = new Hls({
+                maxBufferLength: 300,
+                maxMaxBufferLength: 600,
+                enableWorker: true,
+            });
+
+            let resolved = false;
+
+            hlsInstance.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
+                if (resolved) return;
+                resolved = true;
+
+                activeEngine = 'hls';
+                qualitySel.innerHTML = '<option value="-1">Auto</option>';
+                hlsInstance.levels.forEach((level, i) => {
+                    const o = document.createElement('option');
+                    o.value = i;
+                    o.textContent = level.height ? level.height + 'p' : `Level ${i + 1}`;
+                    qualitySel.appendChild(o);
+                });
+                resolve();
+            });
+
+            hlsInstance.on(Hls.Events.ERROR, (_e, data) => {
+                if (data.fatal && !resolved) {
+                    resolved = true;
+                    reject(new Error(`HLS.js fatal error: ${data.details}`));
+                }
+            });
+
+            hlsInstance.loadSource(url);
+            hlsInstance.attachMedia(video);
+        });
+    }
+
+    // ── Smart load with auto-retry ────────────────────────────
     async function loadStream(url) {
         if (!url) return;
         errorBox.style.display = 'none';
-        spinner.style.display = 'flex';
+        spinner.style.display  = 'flex';
         setStatus('Loading: ' + url);
         qualitySel.innerHTML = '<option value="-1">Auto</option>';
 
+        const isDash = isDashUrl(url);
+        const isHls  = isHlsUrl(url);
+
         try {
-            await player.load(url);
+            if (engineMode === 'hls') {
+                if (isDash) throw new Error('HLS.js does not support DASH streams. Switch engine to Shaka or Auto.');
+                await loadWithHls(url);
+                setStatus('Playing: ' + url, 'hls');
+            } else if (engineMode === 'shaka') {
+                await loadWithShaka(url);
+                setStatus('Playing: ' + url, 'shaka');
+            } else {
+                // Auto: try Shaka first; if it fails on an HLS stream, retry with HLS.js
+                let shakaErr = null;
+                try {
+                    await loadWithShaka(url);
+                    setStatus('Playing: ' + url, 'shaka');
+                } catch (err) {
+                    shakaErr = err;
+                    if (isHls || !isDash) {
+                        setStatus('Shaka failed — retrying with HLS.js…');
+                        try {
+                            await loadWithHls(url);
+                            setStatus('Playing: ' + url, 'hls');
+                            shakaErr = null; // HLS.js succeeded
+                        } catch (_) {
+                            // Both failed; surface the original Shaka error
+                        }
+                    }
+                }
+                if (shakaErr) throw shakaErr;
+            }
+
             spinner.style.display = 'none';
-            setStatus('Playing: ' + url);
-
-            const heights = [...new Set(
-                player.getVariantTracks().map(t => t.height).filter(Boolean)
-            )].sort((a, b) => b - a);
-
-            heights.forEach(h => {
-                const o = document.createElement('option');
-                o.value = h; o.textContent = h + 'p';
-                qualitySel.appendChild(o);
-            });
-
             video.play().catch(() => {});
         } catch (err) {
             spinner.style.display = 'none';
@@ -710,12 +884,10 @@
     urlInput.addEventListener('focus', () => histRender(urlInput.value));
     urlInput.addEventListener('input', () => histRender(urlInput.value));
 
-    // close when clicking outside the url bar
     document.addEventListener('mousedown', e => {
         if (!e.target.closest('#url-wrap') && !e.target.closest('#load-btn')) histClose();
     });
 
-    // keyboard nav in dropdown
     urlInput.addEventListener('keydown', e => {
         if (e.key === 'ArrowDown') {
             const first = histDrop.querySelector('.hi');
@@ -760,7 +932,6 @@
     video.addEventListener('pause', syncPlayIcon);
     syncPlayIcon();
 
-    // click video to toggle play/pause
     video.addEventListener('click', () => video.paused ? video.play() : video.pause());
 
     // ── Volume icons ─────────────────────────────────────────
@@ -841,29 +1012,48 @@
     playerWrap.addEventListener('mousemove', showCtrl);
     playerWrap.addEventListener('mouseenter', showCtrl);
 
-    // ── Quality ──────────────────────────────────────────────
+    // ── Quality selector ─────────────────────────────────────
     qualitySel.addEventListener('change', () => {
         const v = parseInt(qualitySel.value);
-        if (v === -1) {
-            player.configure({ abr: { enabled: true } });
-        } else {
-            player.configure({ abr: { enabled: false } });
-            // pick highest-bitrate track at this height
-            const tracks = player.getVariantTracks().filter(t => t.height === v);
-            const track = tracks.sort((a, b) => b.bandwidth - a.bandwidth)[0];
-            if (track) player.selectVariantTrack(track, true);
+        if (activeEngine === 'hls' && hlsInstance) {
+            hlsInstance.currentLevel = v; // -1 = ABR auto
+        } else if (activeEngine === 'shaka') {
+            if (v === -1) {
+                player.configure({ abr: { enabled: true } });
+            } else {
+                player.configure({ abr: { enabled: false } });
+                const tracks = player.getVariantTracks().filter(t => t.height === v);
+                const track = tracks.sort((a, b) => b.bandwidth - a.bandwidth)[0];
+                if (track) player.selectVariantTrack(track, true);
+            }
         }
     });
 
-    // ── Shaka events ─────────────────────────────────────────
+    // ── Spinner: Shaka buffering ──────────────────────────────
+    player.addEventListener('buffering', e => {
+        if (activeEngine === 'shaka') {
+            spinner.style.display = e.buffering ? 'flex' : 'none';
+        }
+    });
+
+    // ── Spinner: HLS.js / native buffering ───────────────────
+    video.addEventListener('waiting', () => {
+        if (activeEngine !== 'shaka') spinner.style.display = 'flex';
+    });
+    video.addEventListener('playing', () => {
+        if (activeEngine !== 'shaka') spinner.style.display = 'none';
+    });
+    video.addEventListener('canplay', () => {
+        if (activeEngine !== 'shaka') spinner.style.display = 'none';
+    });
+
+    // ── Shaka error event ─────────────────────────────────────
     player.addEventListener('error', e => {
+        if (activeEngine !== 'shaka') return;
         spinner.style.display = 'none';
         const d = diagnose(e.detail, urlInput.value.trim());
         showError(d.title, d.body, d.tip, d.link);
         setStatus('Player error: ' + d.title);
-    });
-    player.addEventListener('buffering', e => {
-        spinner.style.display = e.buffering ? 'flex' : 'none';
     });
 
     // ── Shortcuts panel toggle ───────────────────────────────
@@ -871,7 +1061,6 @@
 
     // ── Keyboard controls ────────────────────────────────────
     document.addEventListener('keydown', e => {
-        // Don't steal keys when focus is in the URL bar
         if (document.activeElement === urlInput) return;
 
         switch (e.key) {
