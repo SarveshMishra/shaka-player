@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Shaka Player</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #0f0f0f;
+            color: #fff;
+            font-family: system-ui, -apple-system, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── URL bar ──────────────────────────────────────────── */
+        #url-bar {
+            display: flex;
+            gap: 8px;
+            padding: 10px 14px;
+            background: #1c1c1c;
+            border-bottom: 1px solid #2a2a2a;
+            flex-shrink: 0;
+        }
+        #url-input {
+            flex: 1;
+            padding: 7px 12px;
+            background: #2a2a2a;
+            border: 1px solid #3a3a3a;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        #url-input:focus { border-color: #666; }
+        #url-input::placeholder { color: #666; }
+        .url-btn {
+            padding: 7px 14px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: filter 0.15s;
+        }
+        .url-btn:hover { filter: brightness(1.15); }
+        #load-btn  { background: #e50914; color: #fff; }
+        #demo-btn  { background: #2a2a2a; color: #ccc; border: 1px solid #3a3a3a; }
+
+        /* ── Player container ─────────────────────────────────── */
+        #player-wrap {
+            position: relative;
+            flex: 1;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            outline: none;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        /* fullscreen resets */
+        #player-wrap:fullscreen,
+        #player-wrap:-webkit-full-screen {
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* ── Spinner ──────────────────────────────────────────── */
+        #spinner {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+        #spinner::after {
+            content: '';
+            width: 52px;
+            height: 52px;
+            border: 4px solid rgba(255,255,255,0.15);
+            border-top-color: rgba(255,255,255,0.85);
+            border-radius: 50%;
+            animation: spin 0.75s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Error ────────────────────────────────────────────── */
+        #error-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(30,10,10,0.95);
+            backdrop-filter: blur(6px);
+            border: 1px solid rgba(220,60,60,0.5);
+            padding: 18px 22px;
+            border-radius: 10px;
+            font-size: 13px;
+            max-width: 480px;
+            width: calc(100% - 40px);
+            display: none;
+            line-height: 1.5;
+        }
+        #error-box .err-title {
+            font-weight: 600;
+            color: #ff6b6b;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        #error-box .err-body { color: #ccc; }
+        #error-box .err-tip {
+            margin-top: 12px;
+            padding: 10px 12px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 6px;
+            color: #aaa;
+            font-size: 12px;
+        }
+        #error-box .err-tip strong { color: #ddd; }
+        #error-box .err-link {
+            display: inline-block;
+            margin-top: 10px;
+            color: #5b9cf6;
+            text-decoration: none;
+            font-size: 12px;
+        }
+        #error-box .err-link:hover { text-decoration: underline; }
+
+        /* ── OSD (on-screen display) ──────────────────────────── */
+        #osd {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.72);
+            backdrop-filter: blur(4px);
+            color: #fff;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-size: 17px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.25s;
+            white-space: nowrap;
+        }
+        #osd.visible { opacity: 1; }
+
+        /* ── Shortcuts panel ──────────────────────────────────── */
+        #shortcuts {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            background: rgba(10,10,10,0.92);
+            backdrop-filter: blur(6px);
+            border: 1px solid #333;
+            border-radius: 10px;
+            padding: 16px 18px;
+            font-size: 12px;
+            line-height: 1;
+            min-width: 210px;
+            display: none;
+            z-index: 10;
+        }
+        #shortcuts.visible { display: block; }
+        #shortcuts h3 { font-size: 13px; margin-bottom: 12px; color: #ccc; }
+        .sc-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 12px; }
+        .sc-row:last-child { margin-bottom: 0; }
+        .sc-keys { display: flex; gap: 4px; }
+        .key {
+            background: rgba(255,255,255,0.12);
+            border: 1px solid rgba(255,255,255,0.18);
+            padding: 2px 7px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+            color: #ddd;
+        }
+        .sc-label { color: #999; }
+
+        /* ── Controls overlay ─────────────────────────────────── */
+        #ctrl-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 48px 14px 12px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.82));
+            opacity: 0;
+            transition: opacity 0.25s;
+        }
+        #player-wrap.show-ctrl #ctrl-overlay { opacity: 1; }
+        /* always show when paused */
+        #player-wrap.paused #ctrl-overlay { opacity: 1; }
+
+        /* progress */
+        #prog-track {
+            position: relative;
+            height: 4px;
+            background: rgba(255,255,255,0.25);
+            border-radius: 2px;
+            cursor: pointer;
+            margin-bottom: 10px;
+            transition: height 0.15s;
+        }
+        #prog-track:hover { height: 6px; }
+        #prog-buf, #prog-fill {
+            position: absolute;
+            top: 0; left: 0;
+            height: 100%;
+            border-radius: 2px;
+            width: 0%;
+            pointer-events: none;
+        }
+        #prog-buf  { background: rgba(255,255,255,0.35); }
+        #prog-fill { background: #e50914; }
+
+        /* thumb dot */
+        #prog-thumb {
+            position: absolute;
+            top: 50%;
+            transform: translate(-50%, -50%) scale(0);
+            width: 14px; height: 14px;
+            background: #fff;
+            border-radius: 50%;
+            pointer-events: none;
+            transition: transform 0.15s;
+            left: 0%;
+        }
+        #prog-track:hover #prog-thumb { transform: translate(-50%, -50%) scale(1); }
+
+        /* bottom row */
+        #ctrl-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .cbtn {
+            background: none;
+            border: none;
+            color: #fff;
+            cursor: pointer;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.88;
+            transition: opacity 0.15s, transform 0.12s;
+            flex-shrink: 0;
+        }
+        .cbtn:hover { opacity: 1; transform: scale(1.12); }
+        .cbtn svg { width: 22px; height: 22px; fill: #fff; }
+
+        /* volume */
+        #vol-wrap { display: flex; align-items: center; gap: 6px; }
+        #vol-range {
+            width: 0;
+            height: 4px;
+            appearance: none;
+            -webkit-appearance: none;
+            background: rgba(255,255,255,0.5);
+            border-radius: 2px;
+            cursor: pointer;
+            overflow: hidden;
+            transition: width 0.2s;
+            accent-color: #fff;
+        }
+        #vol-range::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+        #vol-range::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: #fff; border: none; }
+        #vol-wrap:hover #vol-range { width: 72px; }
+
+        #time-lbl {
+            font-size: 12px;
+            color: rgba(255,255,255,0.88);
+            white-space: nowrap;
+            user-select: none;
+        }
+        #spacer { flex: 1; }
+
+        #quality-sel {
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: #fff;
+            padding: 3px 6px;
+            font-size: 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            outline: none;
+        }
+        #quality-sel option { background: #1c1c1c; }
+
+        /* ── Status bar ───────────────────────────────────────── */
+        #status-bar {
+            padding: 5px 14px;
+            background: #1c1c1c;
+            border-top: 1px solid #2a2a2a;
+            font-size: 11px;
+            color: #555;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex-shrink: 0;
+        }
+
+        /* ── Help hint ────────────────────────────────────────── */
+        #help-hint {
+            position: absolute;
+            top: 10px;
+            right: 12px;
+            background: rgba(0,0,0,0.5);
+            color: rgba(255,255,255,0.5);
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            user-select: none;
+            transition: color 0.15s;
+            z-index: 5;
+        }
+        #help-hint:hover { color: rgba(255,255,255,0.9); }
+        #player-wrap.paused #help-hint,
+        #player-wrap.show-ctrl #help-hint { opacity: 1; }
+    </style>
+</head>
+<body>
+
+<!-- URL input -->
+<div id="url-bar">
+    <input id="url-input" type="text" placeholder="DASH (.mpd) or HLS (.m3u8) URL — press Enter to load" spellcheck="false" />
+    <button class="url-btn" id="load-btn">Load</button>
+    <button class="url-btn" id="demo-btn">Demo</button>
+</div>
+
+<!-- Player -->
+<div id="player-wrap" tabindex="0">
+    <video id="video"></video>
+
+    <div id="spinner"></div>
+    <div id="error-box"></div>
+    <div id="osd"></div>
+
+    <!-- Keyboard shortcuts panel -->
+    <div id="shortcuts">
+        <h3>Keyboard Shortcuts</h3>
+        <div class="sc-row"><span class="sc-keys"><span class="key">Space</span><span class="key">K</span></span><span class="sc-label">Play / Pause</span></div>
+        <div class="sc-row"><span class="sc-keys"><span class="key">→</span></span><span class="sc-label">Forward 10s</span></div>
+        <div class="sc-row"><span class="sc-keys"><span class="key">←</span></span><span class="sc-label">Back 10s</span></div>
+        <div class="sc-row"><span class="sc-keys"><span class="key">↑</span></span><span class="sc-label">Volume +10%</span></div>
+        <div class="sc-row"><span class="sc-keys"><span class="key">↓</span></span><span class="sc-label">Volume −10%</span></div>
+        <div class="sc-row"><span class="sc-keys"><span class="key">M</span></span><span class="sc-label">Mute toggle</span></div>
+        <div class="sc-row"><span class="sc-keys"><span class="key">F</span></span><span class="sc-label">Fullscreen</span></div>
+        <div class="sc-row"><span class="sc-keys"><span class="key">0</span>–<span class="key">9</span></span><span class="sc-label">Seek 0–90%</span></div>
+        <div class="sc-row"><span class="sc-keys"><span class="key">?</span></span><span class="sc-label">Toggle this panel</span></div>
+    </div>
+
+    <div id="help-hint">? shortcuts</div>
+
+    <!-- Controls overlay -->
+    <div id="ctrl-overlay">
+        <!-- Progress bar -->
+        <div id="prog-track">
+            <div id="prog-buf"></div>
+            <div id="prog-fill"></div>
+            <div id="prog-thumb"></div>
+        </div>
+
+        <!-- Control row -->
+        <div id="ctrl-row">
+            <!-- Play/Pause -->
+            <button class="cbtn" id="pp-btn" title="Play / Pause  [Space]">
+                <!-- play icon -->
+                <svg id="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                <!-- pause icon -->
+                <svg id="icon-pause" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            </button>
+
+            <!-- Volume -->
+            <div id="vol-wrap">
+                <button class="cbtn" id="mute-btn" title="Mute  [M]">
+                    <svg id="icon-vol" viewBox="0 0 24 24"></svg>
+                </button>
+                <input id="vol-range" type="range" min="0" max="1" step="0.02" value="1" />
+            </div>
+
+            <!-- Time -->
+            <span id="time-lbl">0:00 / 0:00</span>
+
+            <div id="spacer"></div>
+
+            <!-- Quality -->
+            <select id="quality-sel" title="Quality"><option value="-1">Auto</option></select>
+
+            <!-- Fullscreen -->
+            <button class="cbtn" id="fs-btn" title="Fullscreen  [F]">
+                <svg id="icon-fs-enter" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                <svg id="icon-fs-exit"  viewBox="0 0 24 24" style="display:none"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="status-bar">Ready — enter a stream URL above or click Demo</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.7/shaka-player.compiled.js"></script>
+<script>
+(async function () {
+    const DEMO_URL = 'https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd';
+
+    const video       = document.getElementById('video');
+    const playerWrap  = document.getElementById('player-wrap');
+    const urlInput    = document.getElementById('url-input');
+    const loadBtn     = document.getElementById('load-btn');
+    const demoBtn     = document.getElementById('demo-btn');
+    const spinner     = document.getElementById('spinner');
+    const errorBox    = document.getElementById('error-box');
+    const osdEl       = document.getElementById('osd');
+    const shortcuts   = document.getElementById('shortcuts');
+    const helpHint    = document.getElementById('help-hint');
+    const ppBtn       = document.getElementById('pp-btn');
+    const iconPlay    = document.getElementById('icon-play');
+    const iconPause   = document.getElementById('icon-pause');
+    const muteBtn     = document.getElementById('mute-btn');
+    const iconVol     = document.getElementById('icon-vol');
+    const volRange    = document.getElementById('vol-range');
+    const timeLbl     = document.getElementById('time-lbl');
+    const progTrack   = document.getElementById('prog-track');
+    const progBuf     = document.getElementById('prog-buf');
+    const progFill    = document.getElementById('prog-fill');
+    const progThumb   = document.getElementById('prog-thumb');
+    const qualitySel  = document.getElementById('quality-sel');
+    const fsBtn       = document.getElementById('fs-btn');
+    const iconFsIn    = document.getElementById('icon-fs-enter');
+    const iconFsOut   = document.getElementById('icon-fs-exit');
+    const statusBar   = document.getElementById('status-bar');
+
+    // ── Shaka init ───────────────────────────────────────────
+    shaka.polyfill.installAll();
+    if (!shaka.Player.isBrowserSupported()) {
+        alert('Shaka Player is not supported on this browser.');
+        return;
+    }
+    const player = new shaka.Player(video);
+    player.configure({
+        streaming: { bufferingGoal: 300, bufferBehind: 60 }
+    });
+
+    // ── Helpers ──────────────────────────────────────────────
+    function fmt(s) {
+        if (!isFinite(s) || isNaN(s)) return '0:00';
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = Math.floor(s % 60);
+        return h > 0
+            ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+            : `${m}:${String(sec).padStart(2,'0')}`;
+    }
+
+    let osdTimer = null;
+    function osd(msg) {
+        osdEl.textContent = msg;
+        osdEl.classList.add('visible');
+        clearTimeout(osdTimer);
+        osdTimer = setTimeout(() => osdEl.classList.remove('visible'), 1100);
+    }
+
+    function setStatus(msg) { statusBar.textContent = msg; }
+
+    // ── Error helpers ─────────────────────────────────────────
+    function diagnose(err, url) {
+        // Shaka structured errors
+        if (err && err.code !== undefined) {
+            const { code, category, data } = err;
+            const httpStatus = Array.isArray(data) ? data[2] : undefined;
+
+            if (code === 1002 && httpStatus === 0) {
+                const isHttps = url && url.startsWith('https://');
+                return {
+                    title: 'Network request blocked (status 0)',
+                    body: `The browser could not reach <code>${url}</code>.`,
+                    tip: isHttps
+                        ? '<strong>Most likely cause:</strong> the server uses a self-signed SSL certificate. ' +
+                          'Open the URL below directly in a new tab, accept the certificate warning, then come back and reload.'
+                        : '<strong>Most likely cause:</strong> CORS — the server must respond with ' +
+                          '<code>Access-Control-Allow-Origin: *</code> (or your origin). ' +
+                          'Check server CORS configuration.',
+                    link: isHttps ? url : null,
+                };
+            }
+            if (code === 1002) {
+                return {
+                    title: `HTTP ${httpStatus} error`,
+                    body: `Server returned HTTP ${httpStatus} for the manifest URL.`,
+                    tip: httpStatus === 403
+                        ? '<strong>Tip:</strong> the server requires authentication. Add the required headers or tokens.'
+                        : httpStatus === 404
+                        ? '<strong>Tip:</strong> manifest URL not found — check the path is correct.'
+                        : '<strong>Tip:</strong> check server logs for details.',
+                };
+            }
+            if (code === 1001) return { title: 'Request timed out', body: 'The manifest request timed out.', tip: 'Check network connectivity and server health.' };
+            if (category === 4) return { title: 'Manifest parse error', body: `Shaka could not parse the manifest (code ${code}).`, tip: 'Ensure the URL returns a valid DASH .mpd or HLS .m3u8 file.' };
+        }
+        return { title: 'Playback error', body: err.message || String(err) };
+    }
+
+    function showError(title, body, tip, link) {
+        errorBox.innerHTML =
+            `<div class="err-title">${title}</div>` +
+            `<div class="err-body">${body}</div>` +
+            (tip  ? `<div class="err-tip">${tip}</div>` : '') +
+            (link ? `<a class="err-link" href="${link}" target="_blank" rel="noopener">Open ${link} in new tab &rarr;</a>` : '');
+        errorBox.style.display = 'block';
+    }
+
+    // ── Load stream ──────────────────────────────────────────
+    async function loadStream(url) {
+        if (!url) return;
+        errorBox.style.display = 'none';
+        spinner.style.display = 'flex';
+        setStatus('Loading: ' + url);
+        qualitySel.innerHTML = '<option value="-1">Auto</option>';
+
+        try {
+            await player.load(url);
+            spinner.style.display = 'none';
+            setStatus('Playing: ' + url);
+
+            const heights = [...new Set(
+                player.getVariantTracks().map(t => t.height).filter(Boolean)
+            )].sort((a, b) => b - a);
+
+            heights.forEach(h => {
+                const o = document.createElement('option');
+                o.value = h; o.textContent = h + 'p';
+                qualitySel.appendChild(o);
+            });
+
+            video.play().catch(() => {});
+        } catch (err) {
+            spinner.style.display = 'none';
+            const d = diagnose(err, url);
+            showError(d.title, d.body, d.tip, d.link);
+            setStatus('Failed to load: ' + d.title);
+            console.error(err);
+        }
+    }
+
+    loadBtn.addEventListener('click', () => loadStream(urlInput.value.trim()));
+    urlInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') loadStream(urlInput.value.trim());
+    });
+    demoBtn.addEventListener('click', () => {
+        urlInput.value = DEMO_URL;
+        loadStream(DEMO_URL);
+    });
+
+    // ── Play / Pause ─────────────────────────────────────────
+    function syncPlayIcon() {
+        const paused = video.paused;
+        iconPlay.style.display  = paused ? 'block' : 'none';
+        iconPause.style.display = paused ? 'none'  : 'block';
+        playerWrap.classList.toggle('paused', paused);
+    }
+    ppBtn.addEventListener('click', () => video.paused ? video.play() : video.pause());
+    video.addEventListener('play',  syncPlayIcon);
+    video.addEventListener('pause', syncPlayIcon);
+    syncPlayIcon();
+
+    // click video to toggle play/pause
+    video.addEventListener('click', () => video.paused ? video.play() : video.pause());
+
+    // ── Volume icons ─────────────────────────────────────────
+    const VOL_PATHS = {
+        muted: 'M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z',
+        low:   'M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z',
+        high:  'M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z',
+    };
+    function syncVolIcon() {
+        const m = video.muted || video.volume === 0;
+        iconVol.innerHTML = `<path d="${m ? VOL_PATHS.muted : video.volume < 0.5 ? VOL_PATHS.low : VOL_PATHS.high}"/>`;
+        volRange.value = m ? 0 : video.volume;
+    }
+    muteBtn.addEventListener('click', () => {
+        video.muted = !video.muted;
+        syncVolIcon();
+        osd(video.muted ? 'Muted' : `Volume ${Math.round(video.volume * 100)}%`);
+    });
+    volRange.addEventListener('input', () => {
+        video.volume = parseFloat(volRange.value);
+        video.muted = video.volume === 0;
+        syncVolIcon();
+    });
+    video.addEventListener('volumechange', syncVolIcon);
+    syncVolIcon();
+
+    // ── Progress ─────────────────────────────────────────────
+    video.addEventListener('timeupdate', () => {
+        if (!video.duration) return;
+        const p = video.currentTime / video.duration;
+        progFill.style.width  = (p * 100) + '%';
+        progThumb.style.left  = (p * 100) + '%';
+        timeLbl.textContent = `${fmt(video.currentTime)} / ${fmt(video.duration)}`;
+    });
+    video.addEventListener('progress', () => {
+        if (!video.duration || !video.buffered.length) return;
+        const b = video.buffered.end(video.buffered.length - 1);
+        progBuf.style.width = (b / video.duration * 100) + '%';
+    });
+
+    let dragging = false;
+    function seekTo(e) {
+        const r = progTrack.getBoundingClientRect();
+        const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+        video.currentTime = f * video.duration;
+    }
+    progTrack.addEventListener('mousedown', e => { dragging = true; seekTo(e); e.preventDefault(); });
+    document.addEventListener('mousemove',  e => { if (dragging) seekTo(e); });
+    document.addEventListener('mouseup',    () => { dragging = false; });
+
+    // ── Fullscreen ───────────────────────────────────────────
+    function isFs() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+    function syncFsIcons() {
+        iconFsIn.style.display  = isFs() ? 'none'  : 'block';
+        iconFsOut.style.display = isFs() ? 'block' : 'none';
+    }
+    function toggleFs() {
+        if (isFs()) {
+            (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+        } else {
+            const req = playerWrap.requestFullscreen || playerWrap.webkitRequestFullscreen;
+            req.call(playerWrap);
+        }
+    }
+    fsBtn.addEventListener('click', toggleFs);
+    document.addEventListener('fullscreenchange',       syncFsIcons);
+    document.addEventListener('webkitfullscreenchange', syncFsIcons);
+
+    // ── Controls auto-hide ───────────────────────────────────
+    let hideTimer = null;
+    function showCtrl() {
+        playerWrap.classList.add('show-ctrl');
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+            if (!video.paused) playerWrap.classList.remove('show-ctrl');
+        }, 3000);
+    }
+    playerWrap.addEventListener('mousemove', showCtrl);
+    playerWrap.addEventListener('mouseenter', showCtrl);
+
+    // ── Quality ──────────────────────────────────────────────
+    qualitySel.addEventListener('change', () => {
+        const v = parseInt(qualitySel.value);
+        if (v === -1) {
+            player.configure({ abr: { enabled: true } });
+        } else {
+            player.configure({ abr: { enabled: false } });
+            const track = player.getVariantTracks().find(t => t.height === v);
+            if (track) player.selectVariantTrack(track, true);
+        }
+    });
+
+    // ── Shaka events ─────────────────────────────────────────
+    player.addEventListener('error', e => {
+        spinner.style.display = 'none';
+        const d = diagnose(e.detail, urlInput.value.trim());
+        showError(d.title, d.body, d.tip, d.link);
+        setStatus('Player error: ' + d.title);
+    });
+    player.addEventListener('buffering', e => {
+        spinner.style.display = e.buffering ? 'flex' : 'none';
+    });
+
+    // ── Shortcuts panel toggle ───────────────────────────────
+    helpHint.addEventListener('click', () => shortcuts.classList.toggle('visible'));
+
+    // ── Keyboard controls ────────────────────────────────────
+    document.addEventListener('keydown', e => {
+        // Don't steal keys when focus is in the URL bar
+        if (document.activeElement === urlInput) return;
+
+        switch (e.key) {
+            case ' ':
+            case 'k':
+            case 'K':
+                e.preventDefault();
+                if (video.paused) { video.play(); osd('Play'); }
+                else { video.pause(); osd('Pause'); }
+                break;
+
+            case 'ArrowRight':
+                e.preventDefault();
+                video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
+                osd('+10s');
+                break;
+
+            case 'ArrowLeft':
+                e.preventDefault();
+                video.currentTime = Math.max(0, video.currentTime - 10);
+                osd('-10s');
+                break;
+
+            case 'ArrowUp':
+                e.preventDefault();
+                video.volume = Math.min(1, Math.round((video.volume + 0.1) * 10) / 10);
+                video.muted = false;
+                syncVolIcon();
+                osd(`Volume ${Math.round(video.volume * 100)}%`);
+                break;
+
+            case 'ArrowDown':
+                e.preventDefault();
+                video.volume = Math.max(0, Math.round((video.volume - 0.1) * 10) / 10);
+                syncVolIcon();
+                osd(`Volume ${Math.round(video.volume * 100)}%`);
+                break;
+
+            case 'm':
+            case 'M':
+                video.muted = !video.muted;
+                syncVolIcon();
+                osd(video.muted ? 'Muted' : `Volume ${Math.round(video.volume * 100)}%`);
+                break;
+
+            case 'f':
+            case 'F':
+                e.preventDefault();
+                toggleFs();
+                break;
+
+            case '?':
+                shortcuts.classList.toggle('visible');
+                break;
+
+            case 'Escape':
+                shortcuts.classList.remove('visible');
+                break;
+
+            default:
+                if (e.key >= '0' && e.key <= '9' && video.duration) {
+                    const pct = parseInt(e.key) / 10;
+                    video.currentTime = video.duration * pct;
+                    osd(`${parseInt(e.key) * 10}%`);
+                }
+        }
+    });
+
+})();
+</script>
+</body>
+</html>
